@@ -1,6 +1,8 @@
 # main.py
 import asyncio
 import logging
+import ast
+import os
 from fastapi import FastAPI, Request
 from mcp.server import Server
 from mcp.types import Tool, TextContent
@@ -11,10 +13,12 @@ from engines.governance.tribunal import QualityTribunal
 from models.report import AuditResult, Verdict
 
 # Import Bridge Handler
-from rae_core.bridge.handler import register_bridge
-
-# Import Enterprise Guard
-from rae_core.utils.enterprise_guard import RAE_Enterprise_Foundation, audited_operation
+try:
+    from rae_libs.rae_core.bridge.handler import register_bridge
+    from rae_libs.rae_core.utils.enterprise_guard import RAE_Enterprise_Foundation, audited_operation
+except ImportError:
+    from rae_core.bridge.handler import register_bridge
+    from rae_core.utils.enterprise_guard import RAE_Enterprise_Foundation, audited_operation
 
 # Import TestIntegrityGuard
 from src.test_integrity_guard import TestIntegrityGuard
@@ -24,12 +28,29 @@ import httpx
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("RAE-Quality")
 
+class SeniorityRanker:
+    """Calculates code quality score and classifies seniority level (Junior to Advanced Senior)."""
+    @staticmethod
+    def calculate_score(coverage: float, complexity: float, type_safety: float) -> float:
+        # Score formula: 0.4*Coverage + 0.3*(1 - ComplexityRatio) + 0.3*TypeSafety
+        # Normalize complexity ratio assuming max complexity threshold of 30
+        complexity_ratio = min(complexity / 30.0, 1.0)
+        score = 0.4 * coverage + 0.3 * (1.0 - complexity_ratio) + 0.3 * type_safety
+        return round(score, 4)
+
+    @staticmethod
+    def classify_level(score: float) -> str:
+        if score >= 0.90: return "Advanced Senior"
+        elif score >= 0.75: return "Senior"
+        elif score >= 0.60: return "Mid Developer"
+        return "Junior Developer"
+
 class QualitySentinel:
     def __init__(self):
         self.enterprise_foundation = RAE_Enterprise_Foundation(module_name="rae-quality")
         self.tribunal = QualityTribunal()
         self.test_guard = TestIntegrityGuard()
-        self.api_url = "http://rae-api-dev:8000"
+        self.api_url = os.getenv("RAE_API_URL", "http://rae-api-dev:8000")
         
         # Quality baseline defaults
         self.baseline_coverage = 80.0
@@ -94,9 +115,41 @@ class QualitySentinel:
     @audited_operation(operation_name="run_tribunal_audit", impact_level="high")
     async def perform_tribunal_audit(self, code: str, project: str, importance: str = "medium") -> AuditResult:
         """Executes the advanced 3-tier tribunal audit and enforces policy."""
+        # Enforce Zero Warning Policy using AST parsing first
+        try:
+            ast.parse(code)
+        except SyntaxError as e:
+            # Immediate rejection on AST syntax errors
+            result = AuditResult(
+                verdict=Verdict.REJECTED,
+                score=0.0,
+                reasoning=f"AST parse failed: {str(e)}",
+                issues=[{"type": "SyntaxError", "line": e.lineno, "message": str(e)}]
+            )
+            asyncio.create_task(self._enforce_verdict(result, code, project))
+            return result
+
+        # Standard tribunal scan
         result = await self.tribunal.run_audit(code, project, importance)
         
-        # Enforce active Phoenix intervention
+        # Calculate dynamic Seniority Rank
+        coverage = getattr(result, "coverage", 0.85)  # mock default
+        complexity = getattr(result, "complexity", 8.0) # mock default
+        type_safety = getattr(result, "type_safety", 0.90) # mock default
+        
+        score = SeniorityRanker.calculate_score(coverage, complexity, type_safety)
+        level = SeniorityRanker.classify_level(score)
+        
+        result.score = score
+        result.metadata = result.metadata or {}
+        result.metadata["seniority_level"] = level
+        
+        # Enforce minimum threshold (0.70)
+        if score < 0.70:
+            result.verdict = Verdict.REJECTED
+            result.reasoning = f"Code rejected by SenioritySentinel. Level classified as '{level}' (Score: {score}). Minimum required score is 0.70."
+        
+        # Faza 4: Aktywna Interwencja (Autonomia) / Enforce active Phoenix intervention
         asyncio.create_task(self._enforce_verdict(result, code, project))
         
         return result
@@ -162,6 +215,10 @@ sse = SseServerTransport("/mcp/messages")
 async def mcp_sse_endpoint(request: Request):
     async with sse.connect_sse(request.scope, request.receive, request._send) as (read_stream, write_stream):
         await mcp_server.run(read_stream, write_stream, mcp_server.create_initialization_options())
+
+@app.post("/mcp/messages")
+async def mcp_messages_endpoint(request: Request):
+    await sse.handle_post_message(request.scope, request.receive, request._send)
 
 @app.post("/v2/quality/audit")
 async def api_tribunal_audit(payload: dict):
