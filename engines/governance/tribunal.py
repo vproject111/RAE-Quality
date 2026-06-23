@@ -14,6 +14,8 @@ class QualityTribunal:
     def __init__(self, rae_api_url: Optional[str] = None):
         self.api_url = rae_api_url or os.getenv("RAE_API_URL", "http://rae-api-dev:8000")
         self.timeout = httpx.Timeout(120.0, connect=10.0)
+        self.tier2_agent = os.getenv("TRIBUNAL_TIER2_AGENT", "rae-local-reasoner")
+        self.tier3_agent = os.getenv("TRIBUNAL_TIER3_AGENT", "rae-oracle-gemini")
 
     async def run_audit(self, code: str, project: str, importance: str = "medium") -> AuditResult:
         """Executes the full 3-tier audit pipeline."""
@@ -68,7 +70,7 @@ class QualityTribunal:
                 # Wywołanie lokalnej inferencji przez Mostek A2A
                 resp = await client.post(f"{self.api_url}/v2/bridge/interact", json={
                     "intent": "LOCAL_LLM_AUDIT",
-                    "target_agent": "rae-local-reasoner",
+                    "target_agent": self.tier2_agent,
                     "payload": {"prompt": prompt}
                 })
                 
@@ -95,7 +97,7 @@ class QualityTribunal:
             async with httpx.AsyncClient(timeout=self.timeout) as client:
                 resp = await client.post(f"{self.api_url}/v2/bridge/interact", json={
                     "intent": "SUPREME_COURT_AUDIT",
-                    "target_agent": "rae-oracle-gemini",
+                    "target_agent": self.tier3_agent,
                     "payload": {
                         "code": code,
                         "project": project,
