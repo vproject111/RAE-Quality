@@ -1,10 +1,12 @@
 # engines/governance/tribunal.py
 import asyncio
 import os
+import json
 import httpx
 import logging
 from typing import Dict, Any, Optional
 from models.report import AuditResult, Verdict, QualityIssue, Severity
+from rae_core.llm import resolve_llm_runtime
 
 logger = logging.getLogger("RAE-Quality.Tribunal")
 
@@ -64,56 +66,56 @@ class QualityTribunal:
             Respond ONLY in JSON: {{"verdict": "PASSED"|"REJECTED", "score": 0.0-1.0, "reasoning": "string"}}
             """
             
-            async with httpx.AsyncClient(timeout=self.timeout) as client:
-                # Wywołanie lokalnej inferencji przez Mostek A2A
-                resp = await client.post(f"{self.api_url}/v2/bridge/interact", json={
-                    "intent": "LOCAL_LLM_AUDIT",
-                    "target_agent": "rae-local-reasoner",
-                    "payload": {"prompt": prompt}
-                })
+            provider = await resolve_llm_runtime(requirements={"requires_json_schema": True}, target_agent="rae-local-reasoner")
+            response_text = await provider.generate(prompt)
+            try:
+                data = json.loads(response_text)
+            except Exception:
+                if "```json" in response_text:
+                    response_text = response_text.split("```json")[1].split("```")[0].strip()
+                data = json.loads(response_text)
                 
-                if resp.status_code == 200:
-                    data = resp.json().get("payload", {}).get("interaction_data", {})
-                    # Tu powinna być walidacja JSON, dla uproszczenia zakładamy poprawność formatu
-                    return AuditResult(
-                        verdict=Verdict.PASSED if data.get("verdict") == "PASSED" else Verdict.REJECTED,
-                        confidence=0.85,
-                        score=data.get("score", 0.5),
-                        reasoning=data.get("reasoning", "Semantic consensus reached."),
-                        tier_reached=2
-                    )
-                
-                return AuditResult(verdict=Verdict.ERROR, confidence=0.0, score=0.0, reasoning="Local consensus failed (network/api error).", tier_reached=2)
+            return AuditResult(
+                verdict=Verdict.PASSED if data.get("verdict") == "PASSED" else Verdict.REJECTED,
+                confidence=0.85,
+                score=data.get("score", 0.5),
+                reasoning=data.get("reasoning", "Semantic consensus reached."),
+                tier_reached=2
+            )
         except Exception as e:
-            logger.error("tier2_failed", error=str(e))
+            logger.error(f"tier2_failed: {e}")
             return AuditResult(verdict=Verdict.ERROR, confidence=0.0, score=0.0, reasoning=f"Tier 2 Exception: {str(e)}", tier_reached=2)
 
     async def _run_tier3_escalation(self, code: str, project: str, t2_result: AuditResult) -> AuditResult:
         """High-level reasoning using SaaS Models (Gemini/GPT-4) via Bridge."""
         logger.warning(f"tier3_escalation_initiated: project={project}")
         try:
-            async with httpx.AsyncClient(timeout=self.timeout) as client:
-                resp = await client.post(f"{self.api_url}/v2/bridge/interact", json={
-                    "intent": "SUPREME_COURT_AUDIT",
-                    "target_agent": "rae-oracle-gemini",
-                    "payload": {
-                        "code": code,
-                        "project": project,
-                        "previous_reasoning": t2_result.reasoning
-                    }
-                })
+            prompt = f"""
+            SYSTEM: You are the Supreme Court Auditor.
+            PROJECT: {project}
+            PREVIOUS REASONING: {t2_result.reasoning}
+            CODE:
+            {code}
+            
+            Evaluate and respond ONLY in JSON: {{"verdict": "PASSED"|"REJECTED", "score": 0.0-1.0, "reasoning": "string"}}
+            """
+            provider = await resolve_llm_runtime(requirements={"requires_reasoning": True}, target_agent="rae-oracle-gemini")
+            response_text = await provider.generate(prompt)
+            try:
+                data = json.loads(response_text)
+            except Exception:
+                if "```json" in response_text:
+                    response_text = response_text.split("```json")[1].split("```")[0].strip()
+                data = json.loads(response_text)
                 
-                if resp.status_code == 200:
-                    data = resp.json().get("payload", {}).get("interaction_data", {})
-                    return AuditResult(
-                        verdict=Verdict.PASSED if data.get("verdict") == "PASSED" else Verdict.REJECTED,
-                        confidence=0.98,
-                        score=data.get("score", 1.0),
-                        reasoning=f"Supreme Court Verdict: {data.get('reasoning')}",
-                        tier_reached=3,
-                        metadata={"consensus_log": data.get("detailed_audit")}
-                    )
-            return AuditResult(verdict=Verdict.ERROR, confidence=0.0, score=0.0, reasoning="Supreme Court inaccessible.", tier_reached=3)
+            return AuditResult(
+                verdict=Verdict.PASSED if data.get("verdict") == "PASSED" else Verdict.REJECTED,
+                confidence=0.98,
+                score=data.get("score", 1.0),
+                reasoning=f"Supreme Court Verdict: {data.get('reasoning')}",
+                tier_reached=3,
+                metadata={"consensus_log": data.get("reasoning")}
+            )
         except Exception as e:
             return AuditResult(verdict=Verdict.ERROR, confidence=0.0, score=0.0, reasoning=f"Tier 3 Exception: {str(e)}", tier_reached=3)
 

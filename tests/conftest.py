@@ -7,7 +7,13 @@ from unittest.mock import AsyncMock, patch
 @pytest.fixture
 def mock_rae_api():
     """Mocks the RAE API V2 for testing Tribunal without real LLM costs."""
-    with patch("httpx.AsyncClient.post") as mock_post:
+    from unittest.mock import MagicMock
+    mock_get_resp = MagicMock()
+    mock_get_resp.status_code = 200
+    mock_get_resp.raise_for_status = lambda: None
+    
+    with patch("httpx.AsyncClient.get", return_value=mock_get_resp), \
+         patch("httpx.AsyncClient.post") as mock_post:
         yield mock_post
 
 @pytest.fixture
