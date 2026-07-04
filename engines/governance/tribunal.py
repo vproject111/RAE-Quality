@@ -16,6 +16,8 @@ class QualityTribunal:
     def __init__(self, rae_api_url: Optional[str] = None):
         self.api_url = rae_api_url or os.getenv("RAE_API_URL", "http://rae-api-dev:8000")
         self.timeout = httpx.Timeout(120.0, connect=10.0)
+        self.tier2_agent = os.getenv("TRIBUNAL_TIER2_AGENT", "rae-local-reasoner")
+        self.tier3_agent = os.getenv("TRIBUNAL_TIER3_AGENT", "rae-oracle-gemini")
 
     async def run_audit(self, code: str, project: str, importance: str = "medium") -> AuditResult:
         """Executes the full 3-tier audit pipeline."""
@@ -66,7 +68,7 @@ class QualityTribunal:
             Respond ONLY in JSON: {{"verdict": "PASSED"|"REJECTED", "score": 0.0-1.0, "reasoning": "string"}}
             """
             
-            provider = await resolve_llm_runtime(requirements={"requires_json_schema": True}, target_agent="rae-local-reasoner")
+            provider = await resolve_llm_runtime(requirements={"requires_json_schema": True}, target_agent=self.tier2_agent)
             response_text = await provider.generate(prompt)
             try:
                 data = json.loads(response_text)
@@ -99,7 +101,7 @@ class QualityTribunal:
             
             Evaluate and respond ONLY in JSON: {{"verdict": "PASSED"|"REJECTED", "score": 0.0-1.0, "reasoning": "string"}}
             """
-            provider = await resolve_llm_runtime(requirements={"requires_reasoning": True}, target_agent="rae-oracle-gemini")
+            provider = await resolve_llm_runtime(requirements={"requires_reasoning": True}, target_agent=self.tier3_agent)
             response_text = await provider.generate(prompt)
             try:
                 data = json.loads(response_text)
