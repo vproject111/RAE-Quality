@@ -3,6 +3,20 @@ import asyncio
 import logging
 import ast
 import os
+import sys
+
+# Enforce Git Flow & SemVer Branch Guard Validation
+try:
+    from rae_core.governance.versioning import VersioningValidator
+    VersioningValidator(
+        project_path=os.path.dirname(os.path.abspath(__file__)),
+        module_name="rae-quality",
+        config={"strategy": "git-flow", "strict": True}
+    ).validate()
+except Exception as e:
+    print(f"❌ Git Flow Validation failed: {e}", file=sys.stderr)
+    sys.exit(1)
+
 from fastapi import FastAPI, Request
 from mcp.server import Server
 from mcp.types import Tool, TextContent
