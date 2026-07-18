@@ -1,0 +1,9 @@
+quality_gate:
+  min_coverage: 0.80
+  min_type_safety: 0.85
+  min_mutation_score: 0.85
+  max_complexity: 15.0
+  min_score: 0.70
+  allowed_severities:
+    - low
+    - medium
