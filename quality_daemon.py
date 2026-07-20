@@ -80,7 +80,9 @@ class QualityDaemon:
 
 if __name__ == "__main__":
     # Resolve workspace paths dynamically
-    base_cloud = "/home/grzegorz-lesniowski/cloud"
+    from pathlib import Path
+    default_base = Path(__file__).resolve().parents[3]
+    base_cloud = os.getenv("RAE_CLOUD_ROOT", str(default_base))
     projects = ["billboard-marker", "screenwatcher_project", "RAE-agentic-memory"]
     
     watch_dirs = [os.path.join(base_cloud, p) for p in projects]

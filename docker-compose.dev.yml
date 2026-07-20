@@ -6,4 +6,4 @@ services:
     volumes:
       - .:/app
       - ../RAE-agentic-memory/rae-core/rae_core:/app/rae_libs/rae_core
-      - /home/grzegorz-lesniowski/cloud:/projects:ro
+      - ../..:/projects:ro
