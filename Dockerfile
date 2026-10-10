@@ -22,7 +22,7 @@ ENV PATH="/opt/venv/bin:$PATH"
 
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt \
-    && pip install --no-cache-dir fastapi uvicorn httpx structlog
+    && pip install --no-cache-dir fastapi uvicorn httpx structlog aiosqlite numpy pydantic-settings "mcp<2"
 
 # STAGE 2: Final Runtime
 FROM ubuntu:22.04
