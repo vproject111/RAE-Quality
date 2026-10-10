@@ -35,6 +35,7 @@ class AuditResult(BaseModel):
     issues: List[QualityIssue] = []
     reasoning: str
     tier_reached: int = 1
+    seniority_level: str = "junior"
     metadata: Dict[str, Any] = {}
 
 class ScanReport(BaseModel):

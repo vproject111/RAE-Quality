@@ -23,6 +23,7 @@ from mcp.types import Tool, TextContent
 from mcp.server.sse import SseServerTransport
 from engines.security.sast import SastSecurityEngine
 from engines.testing.coverage import CoverageEngine
+from engines.testing.ast_inspector import ASTInspector
 from engines.governance.tribunal import QualityTribunal
 from models.report import AuditResult, Verdict
 
@@ -39,22 +40,7 @@ import httpx
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("RAE-Quality")
 
-class SeniorityRanker:
-    """Calculates code quality score and classifies seniority level (Junior to Advanced Senior)."""
-    @staticmethod
-    def calculate_score(coverage: float, complexity: float, type_safety: float) -> float:
-        # Score formula: 0.4*Coverage + 0.3*(1 - ComplexityRatio) + 0.3*TypeSafety
-        # Normalize complexity ratio assuming max complexity threshold of 30
-        complexity_ratio = min(complexity / 30.0, 1.0)
-        score = 0.4 * coverage + 0.3 * (1.0 - complexity_ratio) + 0.3 * type_safety
-        return round(score, 4)
-
-    @staticmethod
-    def classify_level(score: float) -> str:
-        if score >= 0.90: return "Advanced Senior"
-        elif score >= 0.75: return "Senior"
-        elif score >= 0.60: return "Mid Developer"
-        return "Junior Developer"
+from engines.governance.seniority_ranker import SeniorityRanker
 
 class QualitySentinel:
     def __init__(self):
@@ -97,39 +83,46 @@ class QualitySentinel:
     @audited_operation(operation_name="run_tribunal_audit", impact_level="high")
     async def perform_tribunal_audit(self, code: str, project: str, importance: str = "medium") -> AuditResult:
         """Executes the advanced 3-tier tribunal audit and enforces policy."""
-        # Enforce Zero Warning Policy using AST parsing first
-        try:
-            ast.parse(code)
-        except SyntaxError as e:
-            # Immediate rejection on AST syntax errors
+        # 1. Deterministic AST Inspection (sub-20ms)
+        ast_metrics = ASTInspector.analyze_code(code)
+        if not ast_metrics["is_valid_syntax"]:
             result = AuditResult(
                 verdict=Verdict.REJECTED,
                 score=0.0,
-                reasoning=f"AST parse failed: {str(e)}",
-                issues=[{"type": "SyntaxError", "line": e.lineno, "message": str(e)}]
+                confidence=1.0,
+                reasoning=f"AST parse failed: {ast_metrics.get('syntax_error')}",
+                issues=ast_metrics["issues"],
+                seniority_level="junior"
             )
             asyncio.create_task(self._enforce_verdict(result, code, project))
             return result
 
-        # Standard tribunal scan
+        # 2. Standard tribunal scan (heuristics / semantic consensus)
         result = await self.tribunal.run_audit(code, project, importance)
+        result.issues.extend(ast_metrics["issues"])
         
-        # Calculate dynamic Seniority Rank
-        coverage = getattr(result, "coverage", 0.85)  # mock default
-        complexity = getattr(result, "complexity", 8.0) # mock default
-        type_safety = getattr(result, "type_safety", 0.90) # mock default
+        # 3. Calculate dynamic Seniority Rank from real AST measurements
+        complexity = float(ast_metrics["complexity"])
+        type_safety = float(ast_metrics["type_safety"])
+        coverage = getattr(result, "coverage", 0.90)
         
         score = SeniorityRanker.calculate_score(coverage, complexity, type_safety)
         level = SeniorityRanker.classify_level(score)
         
         result.score = score
+        result.seniority_level = level.lower().replace(" ", "_")
         result.metadata = result.metadata or {}
         result.metadata["seniority_level"] = level
+        result.metadata["ast_complexity"] = complexity
+        result.metadata["ast_type_safety"] = type_safety
         
         # Enforce minimum threshold (0.70)
         if score < 0.70:
             result.verdict = Verdict.REJECTED
-            result.reasoning = f"Code rejected by SenioritySentinel. Level classified as '{level}' (Score: {score}). Minimum required score is 0.70."
+            result.reasoning = (
+                f"Code rejected by SenioritySentinel. Level classified as '{level}' (Score: {score}). "
+                f"Complexity: {complexity}, Type Safety: {type_safety * 100:.1f}%. Minimum required score is 0.70."
+            )
         
         # Faza 4: Aktywna Interwencja (Autonomia)
         asyncio.create_task(self._enforce_verdict(result, code, project))
