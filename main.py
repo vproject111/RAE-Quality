@@ -137,17 +137,25 @@ class QualitySentinel:
         return result
 
 # Inicjalizacja usług
+from engines.testing.test_aggregator import UnifiedTestAggregator
+from engines.testing.mutation_runner import MutationCoverageEngine
+
 sentinel = QualitySentinel()
 defect_tracker = DefectTracker()
 pdf_validator = PDFDtpValidator()
 golden_set_runner = GoldenSetRunner(pdf_validator)
 calc_verifier = CalculatorVerifier()
 sonar_client = SonarQubeClient()
+test_aggregator = UnifiedTestAggregator()
+mutation_engine = MutationCoverageEngine()
+
 risk_engine = RiskCoverageEngine(
     calculator_verifier=calc_verifier,
     pdf_validator=pdf_validator,
     sonar_client=sonar_client,
-    golden_set_runner=golden_set_runner
+    golden_set_runner=golden_set_runner,
+    test_aggregator=test_aggregator,
+    mutation_engine=mutation_engine
 )
 
 mcp_server = Server("rae-quality")
@@ -233,6 +241,21 @@ async def handle_list_tools():
                 },
                 "required": ["modified_files"]
             }
+        ),
+        Tool(
+            name="get_sonar_strict_metrics",
+            description="Audits 6 strict SonarQube Rating A metrics (vulnerabilities:0, bugs:0, smells:0, hotspots:100%, coverage:>90%, duplications:0%) across core projects.",
+            inputSchema={"type": "object", "properties": {}}
+        ),
+        Tool(
+            name="get_unit_test_inventory",
+            description="Verifies dual volume requirements: >= 1000 unit tests in RAE-Suite and >= 1000 in Dreamsoft Factory.",
+            inputSchema={"type": "object", "properties": {}}
+        ),
+        Tool(
+            name="run_mutation_audit",
+            description="Audits mutation testing resilience and enforces MSI >= 90% across Stryker, Infection, and Mutmut.",
+            inputSchema={"type": "object", "properties": {}}
         )
     ]
 
@@ -278,6 +301,21 @@ async def handle_call_tool(name: str, arguments: dict):
 
     if name == "run_sonarqube_security_audit":
         res = sonar_client.get_aggregate_security_score()
+        import json
+        return [TextContent(type="text", text=json.dumps(res, indent=2))]
+
+    if name == "get_sonar_strict_metrics":
+        res = sonar_client.get_aggregate_security_score()
+        import json
+        return [TextContent(type="text", text=json.dumps(res.get("strict_measures", []), indent=2))]
+
+    if name == "get_unit_test_inventory":
+        res = test_aggregator.run_full_inventory()
+        import json
+        return [TextContent(type="text", text=json.dumps(res, indent=2))]
+
+    if name == "run_mutation_audit":
+        res = mutation_engine.run_full_mutation_audit()
         import json
         return [TextContent(type="text", text=json.dumps(res, indent=2))]
 
@@ -357,6 +395,22 @@ async def api_get_predictive_plan(payload: dict):
     """Recommends prioritized test paths based on modified files and RAE-Phoenix impact zone."""
     files = payload.get("modified_files", [])
     return risk_engine.get_predictive_test_plan(files)
+
+@app.get("/v2/quality/sonar-strict-metrics")
+async def api_get_sonar_strict_metrics():
+    """Audits 6 strict SonarQube Rating A metrics across all core projects."""
+    res = sonar_client.get_aggregate_security_score()
+    return res.get("strict_measures", [])
+
+@app.get("/v2/quality/unit-test-inventory")
+async def api_get_unit_test_inventory():
+    """Verifies dual volume requirements: >= 1000 unit tests in RAE-Suite and >= 1000 in Dreamsoft Factory."""
+    return test_aggregator.run_full_inventory()
+
+@app.get("/v2/quality/mutation-audit")
+async def api_get_mutation_audit():
+    """Audits mutation testing resilience and enforces MSI >= 90% across Stryker, Infection, and Mutmut."""
+    return mutation_engine.run_full_mutation_audit()
 
 @app.get("/health")
 def health():

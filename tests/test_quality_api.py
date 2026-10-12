@@ -99,3 +99,26 @@ def test_predictive_plan_endpoint(client):
     assert "RC-01" in data["impacted_path_ids"]
     assert "RC-02" in data["impacted_path_ids"]
 
+def test_sonar_strict_metrics_endpoint(client):
+    resp = client.get("/v2/quality/sonar-strict-metrics")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert isinstance(data, list)
+    assert len(data) >= 1
+
+def test_unit_test_inventory_endpoint(client):
+    resp = client.get("/v2/quality/unit-test-inventory")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert "rae_suite" in data
+    assert "dreamsoft_factory" in data
+    assert data["total_combined_tests"] >= 2000
+
+def test_mutation_audit_endpoint(client):
+    resp = client.get("/v2/quality/mutation-audit")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert "overall_msi" in data
+    assert "target_msi" in data
+    assert data["target_msi"] == 90.0
+
