@@ -25,7 +25,12 @@ from engines.security.sast import SastSecurityEngine
 from engines.testing.coverage import CoverageEngine
 from engines.testing.ast_inspector import ASTInspector
 from engines.governance.tribunal import QualityTribunal
+from engines.governance.risk_coverage_engine import RiskCoverageEngine
+from engines.governance.defect_tracker import DefectTracker
+from engines.testing.pdf_dtp_validator import PDFDtpValidator
+from engines.testing.calculator_verifier import CalculatorVerifier
 from models.report import AuditResult, Verdict
+from models.risk import RiskSeverity
 
 # Import Bridge Handler
 try:
@@ -131,6 +136,11 @@ class QualitySentinel:
 
 # Inicjalizacja usług
 sentinel = QualitySentinel()
+risk_engine = RiskCoverageEngine()
+defect_tracker = DefectTracker()
+pdf_validator = PDFDtpValidator()
+calc_verifier = CalculatorVerifier()
+
 mcp_server = Server("rae-quality")
 
 @mcp_server.list_tools()
@@ -159,6 +169,37 @@ async def handle_list_tools():
                 },
                 "required": ["code", "project"]
             }
+        ),
+        Tool(
+            name="get_risk_coverage",
+            description="Calculates weighted risk coverage across Dreamsoft and RAE-Suite critical business paths.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "run_live_verification": {"type": "boolean", "default": True}
+                }
+            }
+        ),
+        Tool(
+            name="evaluate_deployment_gate",
+            description="Evaluates the 3-level deployment decision (Level 1: Approved, Level 2: Warning, Level 3: Blocked).",
+            inputSchema={"type": "object", "properties": {}}
+        ),
+        Tool(
+            name="run_pdf_dtp_audit",
+            description="Audits DTP PDF production specifications: TrimBox, BleedBox, pure K typography, and Spot Colors.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "doc_spec": {"type": "object"}
+                },
+                "required": ["doc_spec"]
+            }
+        ),
+        Tool(
+            name="run_calculator_audit",
+            description="Validates pricing calculation monotonicity, format proportionality, and p95 latency SLA.",
+            inputSchema={"type": "object", "properties": {}}
         )
     ]
 
@@ -175,10 +216,31 @@ async def handle_call_tool(name: str, arguments: dict):
         importance = arguments.get("importance", "medium")
         result = await sentinel.perform_tribunal_audit(code, project, importance)
         return [TextContent(type="text", text=result.json())]
+
+    if name == "get_risk_coverage":
+        if arguments.get("run_live_verification", True):
+            risk_engine.run_automated_live_verification()
+        coverage = risk_engine.calculate_risk_coverage()
+        return [TextContent(type="text", text=coverage.json())]
+
+    if name == "evaluate_deployment_gate":
+        risk_engine.run_automated_live_verification()
+        gate = risk_engine.evaluate_deployment_gate()
+        return [TextContent(type="text", text=gate.json())]
+
+    if name == "run_pdf_dtp_audit":
+        doc_spec = arguments.get("doc_spec", {})
+        res = pdf_validator.audit_document(doc_spec)
+        return [TextContent(type="text", text=res.json())]
+
+    if name == "run_calculator_audit":
+        res = calc_verifier.run_full_suite()
+        import json
+        return [TextContent(type="text", text=json.dumps(res, indent=2))]
         
     raise ValueError(f"Unknown tool: {name}")
 
-app = FastAPI()
+app = FastAPI(title="RAE-Quality Service", version="2.9.0")
 register_bridge(app, "rae-quality")
 sse = SseServerTransport("/mcp/messages")
 
@@ -198,6 +260,38 @@ async def api_tribunal_audit(payload: dict):
     project = payload.get("project")
     importance = payload.get("importance", "medium")
     return await sentinel.perform_tribunal_audit(code, project, importance)
+
+@app.get("/v2/quality/risk-coverage")
+async def api_get_risk_coverage():
+    """Returns the current weighted Risk Coverage across all critical business paths."""
+    return risk_engine.calculate_risk_coverage()
+
+@app.post("/v2/quality/risk-coverage/verify")
+async def api_verify_risk_coverage():
+    """Executes live automated verifications and recalculates Risk Coverage."""
+    run_details = risk_engine.run_automated_live_verification()
+    coverage = risk_engine.calculate_risk_coverage()
+    return {"coverage": coverage, "execution_details": run_details}
+
+@app.get("/v2/quality/gate-decision")
+async def api_get_gate_decision():
+    """Evaluates the 3-level deployment decision (Level 1: Approved, Level 2: Warning, Level 3: Blocked)."""
+    return risk_engine.evaluate_deployment_gate()
+
+@app.post("/v2/quality/dtp-audit")
+async def api_dtp_audit(payload: dict):
+    """Audits PDF DTP specifications for TrimBox, BleedBox, pure black text, and spot layers."""
+    return pdf_validator.audit_document(payload)
+
+@app.post("/v2/quality/calculator-audit")
+async def api_calculator_audit():
+    """Runs price monotonicity, format proportionality, and latency SLA checks."""
+    return calc_verifier.run_full_suite()
+
+@app.get("/v2/quality/defect-metrics")
+async def api_get_defect_metrics():
+    """Returns Defect Escape Rate, Severity-Weighted score, and MTTR."""
+    return defect_tracker.calculate_metrics()
 
 @app.get("/health")
 def health():
