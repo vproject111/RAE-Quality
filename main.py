@@ -28,7 +28,9 @@ from engines.governance.tribunal import QualityTribunal
 from engines.governance.risk_coverage_engine import RiskCoverageEngine
 from engines.governance.defect_tracker import DefectTracker
 from engines.testing.pdf_dtp_validator import PDFDtpValidator
+from engines.testing.golden_set_runner import GoldenSetRunner
 from engines.testing.calculator_verifier import CalculatorVerifier
+from engines.security.sonar_client import SonarQubeClient
 from models.report import AuditResult, Verdict
 from models.risk import RiskSeverity
 
@@ -136,10 +138,17 @@ class QualitySentinel:
 
 # Inicjalizacja usług
 sentinel = QualitySentinel()
-risk_engine = RiskCoverageEngine()
 defect_tracker = DefectTracker()
 pdf_validator = PDFDtpValidator()
+golden_set_runner = GoldenSetRunner(pdf_validator)
 calc_verifier = CalculatorVerifier()
+sonar_client = SonarQubeClient()
+risk_engine = RiskCoverageEngine(
+    calculator_verifier=calc_verifier,
+    pdf_validator=pdf_validator,
+    sonar_client=sonar_client,
+    golden_set_runner=golden_set_runner
+)
 
 mcp_server = Server("rae-quality")
 
@@ -200,6 +209,30 @@ async def handle_list_tools():
             name="run_calculator_audit",
             description="Validates pricing calculation monotonicity, format proportionality, and p95 latency SLA.",
             inputSchema={"type": "object", "properties": {}}
+        ),
+        Tool(
+            name="run_golden_set_dtp_audit",
+            description="Audits the canonical Golden Set of 5 print products for DTP regression.",
+            inputSchema={"type": "object", "properties": {}}
+        ),
+        Tool(
+            name="run_sonarqube_security_audit",
+            description="Executes live SonarQube Quality Gate checks across all 5 core projects.",
+            inputSchema={"type": "object", "properties": {}}
+        ),
+        Tool(
+            name="get_predictive_test_plan",
+            description="Recommends prioritized test paths based on modified files and RAE-Phoenix impact zone.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "modified_files": {
+                        "type": "array",
+                        "items": {"type": "string"}
+                    }
+                },
+                "required": ["modified_files"]
+            }
         )
     ]
 
@@ -235,6 +268,22 @@ async def handle_call_tool(name: str, arguments: dict):
 
     if name == "run_calculator_audit":
         res = calc_verifier.run_full_suite()
+        import json
+        return [TextContent(type="text", text=json.dumps(res, indent=2))]
+
+    if name == "run_golden_set_dtp_audit":
+        res = golden_set_runner.run_golden_set_regression()
+        import json
+        return [TextContent(type="text", text=json.dumps(res, indent=2))]
+
+    if name == "run_sonarqube_security_audit":
+        res = sonar_client.get_aggregate_security_score()
+        import json
+        return [TextContent(type="text", text=json.dumps(res, indent=2))]
+
+    if name == "get_predictive_test_plan":
+        files = arguments.get("modified_files", [])
+        res = risk_engine.get_predictive_test_plan(files)
         import json
         return [TextContent(type="text", text=json.dumps(res, indent=2))]
         
@@ -292,6 +341,22 @@ async def api_calculator_audit():
 async def api_get_defect_metrics():
     """Returns Defect Escape Rate, Severity-Weighted score, and MTTR."""
     return defect_tracker.calculate_metrics()
+
+@app.get("/v2/quality/golden-set-audit")
+async def api_get_golden_set_audit():
+    """Audits the canonical Golden Set of 5 print products for DTP regression."""
+    return golden_set_runner.run_golden_set_regression()
+
+@app.get("/v2/quality/sonarqube-audit")
+async def api_get_sonarqube_audit():
+    """Executes live SonarQube Quality Gate checks across core projects."""
+    return sonar_client.get_aggregate_security_score()
+
+@app.post("/v2/quality/predictive-plan")
+async def api_get_predictive_plan(payload: dict):
+    """Recommends prioritized test paths based on modified files and RAE-Phoenix impact zone."""
+    files = payload.get("modified_files", [])
+    return risk_engine.get_predictive_test_plan(files)
 
 @app.get("/health")
 def health():

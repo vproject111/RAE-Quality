@@ -86,4 +86,5 @@ class DefectMetrics(BaseModel):
     defect_escape_rate: float  # (production / total) * 100
     severity_weighted_score: int  # 100*P0 + 25*P1 + 5*P2 + 1*P3
     regression_rate: float
+    change_failure_rate: float  # (failed deployments / total deployments) * 100
     mttr_hours: float

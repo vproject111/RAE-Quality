@@ -73,3 +73,29 @@ def test_defect_metrics_endpoint(client):
     data = resp.json()
     assert "defect_escape_rate" in data
     assert "mttr_hours" in data
+
+def test_golden_set_endpoint(client):
+    resp = client.get("/v2/quality/golden-set-audit")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["total_documents"] == 5
+    assert data["all_passed"] is True
+    assert data["verification_score"] == 1.0
+
+def test_sonarqube_endpoint(client):
+    resp = client.get("/v2/quality/sonarqube-audit")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert "verification_score" in data
+    assert "all_gates_passed" in data
+    assert "total_count" in data
+
+def test_predictive_plan_endpoint(client):
+    payload = {"modified_files": ["editor/canvas.tsx", "pricing/matrix.py", "dtp/pdf_exporter.py"]}
+    resp = client.post("/v2/quality/predictive-plan", json=payload)
+    assert resp.status_code == 200
+    data = resp.json()
+    assert len(data["modified_files"]) == 3
+    assert "RC-01" in data["impacted_path_ids"]
+    assert "RC-02" in data["impacted_path_ids"]
+

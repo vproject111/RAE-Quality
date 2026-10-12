@@ -54,3 +54,47 @@ def test_warning_level_2_gate():
     if coverage.total_risk_coverage < 95.0:
         assert gate.verdict == DeploymentGateVerdict.LEVEL_2_WARNING
         assert gate.can_deploy is False
+
+def test_predictive_test_plan():
+    engine = RiskCoverageEngine()
+    # Test modified files mapping
+    files = [
+        "packages/editor/render.ts",
+        "apps/calc/pricing.py",
+        "packages/rae-core/auth/jwt.py"
+    ]
+    plan = engine.get_predictive_test_plan(files)
+    assert len(plan["modified_files"]) == 3
+    assert "RC-01" in plan["impacted_path_ids"]
+    assert "RC-02" in plan["impacted_path_ids"]
+    assert "RC-07" in plan["impacted_path_ids"]
+    assert len(plan["recommended_tests"]) >= 3
+    assert plan["has_p0_impacted"] is True
+
+def test_defect_tracker_and_cfr():
+    from engines.governance.defect_tracker import DefectTracker
+    from models.risk import RiskSeverity
+    from datetime import datetime, timedelta
+    
+    tracker = DefectTracker()
+    tracker.register_deployment(success=True)
+    tracker.register_deployment(success=True)
+    tracker.register_deployment(success=False)
+    
+    # 1 fail out of 3 = 33.33% CFR
+    m = tracker.calculate_metrics()
+    assert m.change_failure_rate == 33.33
+    
+    # Register defects
+    now = datetime.utcnow()
+    tracker.register_defect("CI Syntax Error", RiskSeverity.P3, detected_at="CI", system="editor")
+    tracker.register_defect("Prod Crash", RiskSeverity.P0, detected_at="PRODUCTION", system="backend", resolved_at=now + timedelta(hours=2))
+    
+    metrics = tracker.calculate_metrics()
+    assert metrics.total_defects == 2
+    assert metrics.production_defects == 1
+    assert metrics.ci_defects == 1
+    assert metrics.defect_escape_rate == 50.0
+    assert metrics.severity_weighted_score == 101 # 100 (P0) + 1 (P3)
+    assert metrics.mttr_hours == 2.0
+

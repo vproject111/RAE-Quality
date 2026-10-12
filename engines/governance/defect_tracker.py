@@ -18,6 +18,13 @@ class DefectTracker:
 
     def __init__(self):
         self._defects: List[DefectItem] = []
+        self._deployments_count: int = 0
+        self._failed_deployments_count: int = 0
+
+    def register_deployment(self, success: bool = True):
+        self._deployments_count += 1
+        if not success:
+            self._failed_deployments_count += 1
 
     def register_defect(
         self,
@@ -35,11 +42,16 @@ class DefectTracker:
             resolved_at=resolved_at
         )
         self._defects.append(defect)
+        if detected_at.upper() == "PRODUCTION":
+            self.register_deployment(success=False)
         return defect
 
     def calculate_metrics(self) -> DefectMetrics:
         total = len(self._defects)
         if total == 0:
+            cfr = 0.0
+            if self._deployments_count > 0:
+                cfr = (self._failed_deployments_count / self._deployments_count) * 100.0
             return DefectMetrics(
                 total_defects=0,
                 production_defects=0,
@@ -47,6 +59,7 @@ class DefectTracker:
                 defect_escape_rate=0.0,
                 severity_weighted_score=0,
                 regression_rate=0.0,
+                change_failure_rate=round(cfr, 2),
                 mttr_hours=0.0
             )
 
@@ -70,6 +83,11 @@ class DefectTracker:
         # Regression rate: proportion of production defects
         regression_rate = round((prod_count / max(1, total)) * 100.0, 2)
 
+        # Change failure rate
+        total_deploys = max(self._deployments_count, prod_count)
+        failed_deploys = max(self._failed_deployments_count, prod_count)
+        cfr = (failed_deploys / total_deploys * 100.0) if total_deploys > 0 else 0.0
+
         return DefectMetrics(
             total_defects=total,
             production_defects=prod_count,
@@ -77,5 +95,6 @@ class DefectTracker:
             defect_escape_rate=round(escape_rate, 2),
             severity_weighted_score=weighted_score,
             regression_rate=regression_rate,
+            change_failure_rate=round(cfr, 2),
             mttr_hours=round(mttr, 2)
         )
