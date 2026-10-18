@@ -148,5 +148,5 @@ class GoldenSetRunner:
             "passed_count": passed_count,
             "failed_count": total_count - passed_count,
             "failed_documents": failed_docs,
-            "audits": [r.dict() for r in results]
+            "audits": [r.model_dump() for r in results]
         }

@@ -5,8 +5,20 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import pytest
 import asyncio
+import inspect
 import httpx
 from unittest.mock import AsyncMock, patch
+
+def pytest_configure(config):
+    config.addinivalue_line("markers", "asyncio: mark test as an async coroutine")
+
+def pytest_pyfunc_call(pyfuncitem):
+    if inspect.iscoroutinefunction(pyfuncitem.obj):
+        funcargs = pyfuncitem.funcargs
+        testargs = {arg: funcargs[arg] for arg in pyfuncitem._fixtureinfo.argnames}
+        asyncio.run(pyfuncitem.obj(**testargs))
+        return True
+    return None
 
 @pytest.fixture
 def mock_rae_api():

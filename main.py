@@ -69,7 +69,7 @@ class QualitySentinel:
                             "project": project,
                             "faulty_code": code,
                             "tribunal_reasoning": result.reasoning,
-                            "issues": [issue.dict() for issue in result.issues],
+                            "issues": [issue.model_dump() for issue in result.issues],
                             "instruction": "URGENT: Fix the provided code based on the Tribunal's reasoning to pass the Quality Gate."
                         }
                     }, headers={"X-Tenant-Id": "system-governance", "X-Project-Id": project})
@@ -137,8 +137,10 @@ class QualitySentinel:
         return result
 
 # Inicjalizacja usług
+import json
 from engines.testing.test_aggregator import UnifiedTestAggregator
 from engines.testing.mutation_runner import MutationCoverageEngine
+from engines.governance.quality_gateway_v2 import RAEQualityGatewayV2
 
 sentinel = QualitySentinel()
 defect_tracker = DefectTracker()
@@ -156,6 +158,11 @@ risk_engine = RiskCoverageEngine(
     golden_set_runner=golden_set_runner,
     test_aggregator=test_aggregator,
     mutation_engine=mutation_engine
+)
+
+quality_gateway_v2 = RAEQualityGatewayV2(
+    risk_engine=risk_engine,
+    defect_tracker=defect_tracker,
 )
 
 mcp_server = Server("rae-quality")
@@ -256,6 +263,103 @@ async def handle_list_tools():
             name="run_mutation_audit",
             description="Audits mutation testing resilience and enforces MSI >= 90% across Stryker, Infection, and Mutmut.",
             inputSchema={"type": "object", "properties": {}}
+        ),
+        # RAE-Quality 2.0 Canonical 8 Agent Operations (Section 6)
+        Tool(
+            name="quality.get_policy",
+            description="Pobiera wymagania bezpieczeństwa przed rozpoczęciem zadania (Stage 1: Before Coding).",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "task_description": {"type": "string"},
+                    "modified_files": {"type": "array", "items": {"type": "string"}},
+                    "technologies": {"type": "array", "items": {"type": "string"}}
+                }
+            }
+        ),
+        Tool(
+            name="quality.analyze_diff",
+            description="Analizuje zmieniane pliki podczas pracy agenta (Stage 2: During Work).",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "diff": {"type": "string"},
+                    "modified_files": {"type": "array", "items": {"type": "string"}},
+                    "agent_id": {"type": "string"},
+                    "change_id": {"type": "string"}
+                }
+            }
+        ),
+        Tool(
+            name="quality.security_scan",
+            description="Uruchamia skanery bezpieczeństwa i zwraca raport SARIF 2.1.0.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "code": {"type": "string"},
+                    "file_path": {"type": "string"},
+                    "languages": {"type": "array", "items": {"type": "string"}}
+                }
+            }
+        ),
+        Tool(
+            name="quality.generate_tests",
+            description="Proponuje testy negatywne, izolacji tenantów i regresyjne.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "target_endpoint": {"type": "string"},
+                    "component": {"type": "string"},
+                    "rule_ids": {"type": "array", "items": {"type": "string"}}
+                }
+            }
+        ),
+        Tool(
+            name="quality.verify_fix",
+            description="Potwierdza usunięcie podatności na czystym zestawie testów (blokuje manipulację testami).",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "original_code": {"type": "string"},
+                    "fixed_code": {"type": "string"},
+                    "rule_id": {"type": "string"},
+                    "canonical_test_code": {"type": "string"},
+                    "agent_submitted_test_code": {"type": "string"}
+                },
+                "required": ["original_code", "fixed_code", "rule_id"]
+            }
+        ),
+        Tool(
+            name="quality.check_architecture",
+            description="Sprawdza zgodność z architekturą, bazą danych, transakcjami, współbieżnością i OpenAPI.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "code": {"type": "string"},
+                    "file_path": {"type": "string"},
+                    "technologies": {"type": "array", "items": {"type": "string"}},
+                    "openapi_before": {"type": "object"},
+                    "openapi_after": {"type": "object"}
+                }
+            }
+        ),
+        Tool(
+            name="quality.release_gate",
+            description="Zwraca decyzję o dopuszczeniu zmiany (Quality Score 0-100 + Mandatory Gates: PASS/REPAIR/BLOCK).",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "code": {"type": "string"},
+                    "file_path": {"type": "string"},
+                    "tests_passed": {"type": "integer"},
+                    "tests_total": {"type": "integer"}
+                }
+            }
+        ),
+        Tool(
+            name="quality.report",
+            description="Generuje pełny raport jakości, manifest 219 reguł, kryteria akceptacji i historię audytową.",
+            inputSchema={"type": "object", "properties": {}}
         )
     ]
 
@@ -271,59 +375,57 @@ async def handle_call_tool(name: str, arguments: dict):
         project = arguments.get("project")
         importance = arguments.get("importance", "medium")
         result = await sentinel.perform_tribunal_audit(code, project, importance)
-        return [TextContent(type="text", text=result.json())]
+        return [TextContent(type="text", text=result.model_dump_json())]
 
     if name == "get_risk_coverage":
         if arguments.get("run_live_verification", True):
             risk_engine.run_automated_live_verification()
         coverage = risk_engine.calculate_risk_coverage()
-        return [TextContent(type="text", text=coverage.json())]
+        return [TextContent(type="text", text=coverage.model_dump_json())]
 
     if name == "evaluate_deployment_gate":
         risk_engine.run_automated_live_verification()
         gate = risk_engine.evaluate_deployment_gate()
-        return [TextContent(type="text", text=gate.json())]
+        return [TextContent(type="text", text=gate.model_dump_json())]
 
     if name == "run_pdf_dtp_audit":
         doc_spec = arguments.get("doc_spec", {})
         res = pdf_validator.audit_document(doc_spec)
-        return [TextContent(type="text", text=res.json())]
+        return [TextContent(type="text", text=res.model_dump_json())]
 
     if name == "run_calculator_audit":
         res = calc_verifier.run_full_suite()
-        import json
         return [TextContent(type="text", text=json.dumps(res, indent=2))]
 
     if name == "run_golden_set_dtp_audit":
         res = golden_set_runner.run_golden_set_regression()
-        import json
         return [TextContent(type="text", text=json.dumps(res, indent=2))]
 
     if name == "run_sonarqube_security_audit":
         res = sonar_client.get_aggregate_security_score()
-        import json
         return [TextContent(type="text", text=json.dumps(res, indent=2))]
 
     if name == "get_sonar_strict_metrics":
         res = sonar_client.get_aggregate_security_score()
-        import json
         return [TextContent(type="text", text=json.dumps(res.get("strict_measures", []), indent=2))]
 
     if name == "get_unit_test_inventory":
         res = test_aggregator.run_full_inventory()
-        import json
         return [TextContent(type="text", text=json.dumps(res, indent=2))]
 
     if name == "run_mutation_audit":
         res = mutation_engine.run_full_mutation_audit()
-        import json
         return [TextContent(type="text", text=json.dumps(res, indent=2))]
 
     if name == "get_predictive_test_plan":
         files = arguments.get("modified_files", [])
         res = risk_engine.get_predictive_test_plan(files)
-        import json
         return [TextContent(type="text", text=json.dumps(res, indent=2))]
+
+    normalized_op = name.replace("quality_", "quality.") if name.startswith("quality_") else name
+    if normalized_op.startswith("quality."):
+        res = quality_gateway_v2.dispatch_rpc(normalized_op, arguments)
+        return [TextContent(type="text", text=json.dumps(res, indent=2, default=str))]
         
     raise ValueError(f"Unknown tool: {name}")
 
@@ -411,6 +513,60 @@ async def api_get_unit_test_inventory():
 async def api_get_mutation_audit():
     """Audits mutation testing resilience and enforces MSI >= 90% across Stryker, Infection, and Mutmut."""
     return mutation_engine.run_full_mutation_audit()
+
+# --- RAE-Quality 2.0 Endpoints (8 Operations + RPC + Manifest) ---
+
+@app.post("/v2/quality/policy")
+async def api_quality_get_policy(payload: dict):
+    """Stage 1 (quality.get_policy): Returns security & architecture rules tailored to task risk profile."""
+    return quality_gateway_v2.get_policy(payload)
+
+@app.post("/v2/quality/analyze-diff")
+async def api_quality_analyze_diff(payload: dict):
+    """Stage 2 (quality.analyze_diff): Analyzes in-flight code diffs and schedules surgical auto-repair if needed."""
+    return quality_gateway_v2.analyze_diff(payload)
+
+@app.post("/v2/quality/security-scan")
+async def api_quality_security_scan(payload: dict):
+    """Stage 3 (quality.security_scan): Runs SAST/Secrets/Auth/Editor security scans with SARIF 2.1.0 output."""
+    return quality_gateway_v2.security_scan(payload)
+
+@app.post("/v2/quality/generate-tests")
+async def api_quality_generate_tests(payload: dict):
+    """Stage 3 (quality.generate_tests): Generates negative, tenant-isolation, and regression tests."""
+    return quality_gateway_v2.generate_tests(payload)
+
+@app.post("/v2/quality/verify-fix")
+async def api_quality_verify_fix(payload: dict):
+    """Stage 3 (quality.verify_fix): Independently verifies fixes and blocks test tampering."""
+    return quality_gateway_v2.verify_fix(payload)
+
+@app.post("/v2/quality/check-architecture")
+async def api_quality_check_architecture(payload: dict):
+    """Stage 3 (quality.check_architecture): Verifies DB migrations, transactions, N+1, concurrency, and OpenAPI."""
+    return quality_gateway_v2.check_architecture(payload)
+
+@app.post("/v2/quality/release-gate")
+async def api_quality_release_gate(payload: dict):
+    """Stage 4 (quality.release_gate): Evaluates Dual Risk Assessment (Quality Score 0-100 + Mandatory Gates)."""
+    return quality_gateway_v2.release_gate(payload)
+
+@app.get("/v2/quality/report")
+async def api_quality_report():
+    """Stage 4 (quality.report): Returns full RAE-Quality 2.0 report, 9/9 acceptance criteria, and audit trail."""
+    return quality_gateway_v2.report()
+
+@app.get("/v2/quality/manifest")
+async def api_quality_manifest():
+    """Returns the technical manifest of all 219 rules (198 catalog + 12 AI/SaaS + 9 RAE-EDITOR-SECURITY)."""
+    return quality_gateway_v2.policy_engine.generate_technical_manifest()
+
+@app.post("/v2/quality/rpc")
+async def api_quality_rpc(payload: dict):
+    """Unified RPC endpoint for `quality.<operation>` invocations."""
+    operation = payload.get("operation", "")
+    params = payload.get("params", {})
+    return quality_gateway_v2.dispatch_rpc(operation, params)
 
 @app.get("/health")
 def health():

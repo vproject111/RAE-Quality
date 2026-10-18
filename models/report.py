@@ -1,9 +1,12 @@
 # models/report.py
 from pydantic import BaseModel, Field
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import List, Dict, Any, Optional
 from enum import Enum
 from uuid import UUID, uuid4
+
+def _utc_now() -> datetime:
+    return datetime.now(timezone.utc)
 
 class Severity(str, Enum):
     LOW = "low"
@@ -28,7 +31,7 @@ class QualityIssue(BaseModel):
 
 class AuditResult(BaseModel):
     audit_id: UUID = Field(default_factory=uuid4)
-    timestamp: datetime = Field(default_factory=datetime.utcnow)
+    timestamp: datetime = Field(default_factory=_utc_now)
     verdict: Verdict
     confidence: float = Field(ge=0.0, le=1.0)
     score: float = Field(ge=0.0, le=1.0)
@@ -40,7 +43,7 @@ class AuditResult(BaseModel):
 
 class ScanReport(BaseModel):
     project: str
-    timestamp: datetime = Field(default_factory=datetime.utcnow)
+    timestamp: datetime = Field(default_factory=_utc_now)
     score: float 
     issues: List[QualityIssue]
     metrics: Dict[str, Any]

@@ -1,5 +1,6 @@
 services:
   rae-quality:
+    image: harbor.cloud.printworks.pl/dreamsoft/rae-quality:2.9.0
     build: .
     container_name: rae-quality
     restart: unless-stopped

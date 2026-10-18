@@ -74,7 +74,7 @@ def test_predictive_test_plan():
 def test_defect_tracker_and_cfr():
     from engines.governance.defect_tracker import DefectTracker
     from models.risk import RiskSeverity
-    from datetime import datetime, timedelta
+    from datetime import datetime, timedelta, timezone
     
     tracker = DefectTracker()
     tracker.register_deployment(success=True)
@@ -86,7 +86,7 @@ def test_defect_tracker_and_cfr():
     assert m.change_failure_rate == 33.33
     
     # Register defects
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
     tracker.register_defect("CI Syntax Error", RiskSeverity.P3, detected_at="CI", system="editor")
     tracker.register_defect("Prod Crash", RiskSeverity.P0, detected_at="PRODUCTION", system="backend", resolved_at=now + timedelta(hours=2))
     

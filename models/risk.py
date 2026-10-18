@@ -1,9 +1,12 @@
 # packages/rae-quality/models/risk.py
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, Dict, List, Optional
 from uuid import UUID, uuid4
 from pydantic import BaseModel, Field
+
+def _utc_now() -> datetime:
+    return datetime.now(timezone.utc)
 
 class RiskSeverity(str, Enum):
     P0 = "P0"  # Critical (Loss of data, broken production prints, massive financial drift)
@@ -34,7 +37,7 @@ class RiskPathItem(BaseModel):
     details: Dict[str, Any] = Field(default_factory=dict)
 
 class RiskCoverageResult(BaseModel):
-    timestamp: datetime = Field(default_factory=datetime.utcnow)
+    timestamp: datetime = Field(default_factory=_utc_now)
     total_risk_coverage: float = Field(ge=0.0, le=100.0)
     weighted_score: float
     total_weight: int
@@ -53,7 +56,7 @@ class DeploymentGateResult(BaseModel):
     blockers: List[str] = Field(default_factory=list)
     warnings: List[str] = Field(default_factory=list)
     recommendations: List[str] = Field(default_factory=list)
-    timestamp: datetime = Field(default_factory=datetime.utcnow)
+    timestamp: datetime = Field(default_factory=_utc_now)
 
 class PDFDtpAuditResult(BaseModel):
     document_id: str = Field(default_factory=lambda: str(uuid4())[:8])
@@ -75,7 +78,7 @@ class DefectItem(BaseModel):
     title: str
     severity: RiskSeverity
     detected_at: str  # "CI" or "PRODUCTION"
-    created_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(default_factory=_utc_now)
     resolved_at: Optional[datetime] = None
     system: str
 
