@@ -139,6 +139,36 @@ class QualitySentinel:
         # 2. Standard tribunal scan (heuristics / semantic consensus)
         result = await self.tribunal.run_audit(code, project, importance)
         result.issues.extend(ast_metrics["issues"])
+
+        # 2b. Enrich with RAE-Quality 2.0 Security & Architecture Engines
+        try:
+            from engines.governance.security_scanner_engine import SecurityScannerEngine
+            from engines.governance.architecture_guard_engine import ArchitectureGuardEngine
+            from models.report import CodeIssue
+            sec_scan = SecurityScannerEngine().scan({"code": code, "file_path": "audit_target.py"})
+            arch_scan = ArchitectureGuardEngine().check_architecture({"code": code, "file_path": "audit_target.py"})
+            for f in sec_scan.get("findings", []):
+                if f.get("severity") in ("CRITICAL", "HIGH"):
+                    result.issues.append(CodeIssue(
+                        line=f.get("line", 1),
+                        column=1,
+                        severity=RiskSeverity.CRITICAL if f.get("severity") == "CRITICAL" else RiskSeverity.HIGH,
+                        code=f.get("rule_id", "SEC-V2"),
+                        message=f.get("message", "Security violation detected by RAE-Quality 2.0"),
+                        category="security"
+                    ))
+            for v in arch_scan.get("violations", []):
+                if v.get("severity") in ("CRITICAL", "HIGH"):
+                    result.issues.append(CodeIssue(
+                        line=v.get("line", 1),
+                        column=1,
+                        severity=RiskSeverity.HIGH,
+                        code=v.get("rule_id", "ARCH-V2"),
+                        message=v.get("message", "Architecture violation detected by RAE-Quality 2.0"),
+                        category="architecture"
+                    ))
+        except Exception as e:
+            logger.debug(f"RAE-Quality 2.0 enrichment skipped: {e}")
         
         # 3. Calculate dynamic Seniority Rank from real AST measurements
         complexity = float(ast_metrics["complexity"])
@@ -155,12 +185,16 @@ class QualitySentinel:
         result.metadata["ast_complexity"] = complexity
         result.metadata["ast_type_safety"] = type_safety
         
-        # Enforce minimum threshold (0.70)
-        if score < 0.70:
+        # Enforce minimum threshold (0.70) and zero critical security issues
+        has_critical_sec = any(
+            getattr(i, "severity", None) == RiskSeverity.CRITICAL and getattr(i, "category", "") == "security"
+            for i in result.issues
+        )
+        if score < 0.70 or has_critical_sec:
             result.verdict = Verdict.REJECTED
             result.reasoning = (
                 f"Code rejected by SenioritySentinel. Level classified as '{level}' (Score: {score}). "
-                f"Complexity: {complexity}, Type Safety: {type_safety * 100:.1f}%. Minimum required score is 0.70."
+                f"Complexity: {complexity}, Type Safety: {type_safety * 100:.1f}%, CriticalSecurity: {has_critical_sec}. Minimum required score is 0.70."
             )
         
         # Faza 4: Aktywna Interwencja (Autonomia) / Enforce active Phoenix intervention
