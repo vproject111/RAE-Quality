@@ -20,7 +20,7 @@ WORKDIR /app
 RUN python3.14 -m venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH"
 
-COPY requirements.txt .
+COPY packages/rae-quality/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt \
     && pip install --no-cache-dir fastapi uvicorn httpx structlog aiosqlite numpy pydantic-settings pytest-asyncio "mcp<2"
 
@@ -39,7 +39,7 @@ RUN apt-get update && apt-get install -y \
 
 WORKDIR /app
 COPY --from=builder /opt/venv /opt/venv
-COPY . .
+COPY packages/rae-quality .
 
 HEALTHCHECK --interval=30s --timeout=10s --retries=3 \
   CMD curl -f http://localhost:8000/health || exit 1

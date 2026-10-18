@@ -42,6 +42,9 @@ except ImportError:
     from rae_core.bridge.handler import register_bridge
     from rae_core.utils.enterprise_guard import RAE_Enterprise_Foundation, audited_operation
 
+# Import TestIntegrityGuard
+from src.test_integrity_guard import TestIntegrityGuard
+
 import httpx
 
 logging.basicConfig(level=logging.INFO)
@@ -53,7 +56,12 @@ class QualitySentinel:
     def __init__(self):
         self.enterprise_foundation = RAE_Enterprise_Foundation(module_name="rae-quality")
         self.tribunal = QualityTribunal()
+        self.test_guard = TestIntegrityGuard()
         self.api_url = os.getenv("RAE_API_URL", "http://rae-api-dev:8000")
+        
+        # Quality baseline defaults
+        self.baseline_coverage = 80.0
+        self.baseline_vulnerabilities = 0
 
     async def _enforce_verdict(self, result: AuditResult, code: str, project: str):
         """Autonomously triggers Phoenix repair if code is rejected."""
@@ -77,15 +85,39 @@ class QualitySentinel:
                 logger.error("enforcement_dispatch_failed", error=str(e))
 
     @audited_operation(operation_name="run_quality_audit", impact_level="medium")
-    async def perform_static_audit(self, project_path: str):
-        """Executes a full security and coverage audit for a given project."""
+    async def perform_static_audit(self, project_path: str, baseline_code: str = None, proposed_code: str = None) -> str:
+        """
+        Executes a full security and coverage audit, enforcing baseline and test integrity checks.
+        """
+        # 1. Run SAST Security Engine
         sast = SastSecurityEngine(project_path)
         sast_report = await sast.run()
         
+        # 2. Run Coverage Engine
         testing = CoverageEngine(project_path)
         test_report = await testing.run()
         
-        return f"Audit complete. Security Score: {sast_report.score}, Coverage Score: {test_report.score}"
+        # 3. Check Quality Baseline Regression
+        rejection_reasons = []
+        
+        if test_report.score < self.baseline_coverage:
+            rejection_reasons.append(f"Test coverage ({test_report.score}%) dropped below baseline ({self.baseline_coverage}%).")
+            
+        if sast_report.critical_count > self.baseline_vulnerabilities:
+            rejection_reasons.append(f"Vulnerability count ({sast_report.critical_count}) exceeds baseline ({self.baseline_vulnerabilities}).")
+
+        # 4. Enforce TestIntegrityGuard if test modification is proposed
+        if baseline_code and proposed_code:
+            passed, reason = self.test_guard.validate_test_integrity(baseline_code, proposed_code)
+            if not passed:
+                rejection_reasons.append(reason)
+
+        if rejection_reasons:
+            rejection_summary = " | ".join(rejection_reasons)
+            logger.warning(f"Quality Gate REJECT: {rejection_summary}")
+            return f"REJECTED. Reason: {rejection_summary}"
+            
+        return f"ACCEPTED. Security Score: {sast_report.score}, Coverage Score: {test_report.score}"
 
     @audited_operation(operation_name="run_tribunal_audit", impact_level="high")
     async def perform_tribunal_audit(self, code: str, project: str, importance: str = "medium") -> AuditResult:
@@ -131,7 +163,7 @@ class QualitySentinel:
                 f"Complexity: {complexity}, Type Safety: {type_safety * 100:.1f}%. Minimum required score is 0.70."
             )
         
-        # Faza 4: Aktywna Interwencja (Autonomia)
+        # Faza 4: Aktywna Interwencja (Autonomia) / Enforce active Phoenix intervention
         asyncio.create_task(self._enforce_verdict(result, code, project))
         
         return result
@@ -172,11 +204,13 @@ async def handle_list_tools():
     return [
         Tool(
             name="run_static_quality_audit",
-            description="Executes SAST and Coverage scans on a project path. Audited.",
+            description="Executes SAST and Coverage scans, enforcing Quality Baseline and TestIntegrity checks. Audited.",
             inputSchema={
                 "type": "object",
                 "properties": {
-                    "project_path": {"type": "string"}
+                    "project_path": {"type": "string"},
+                    "baseline_code": {"type": "string", "description": "Original test code before modifications"},
+                    "proposed_code": {"type": "string", "description": "New proposed test code to evaluate"}
                 },
                 "required": ["project_path"]
             }
@@ -367,7 +401,9 @@ async def handle_list_tools():
 async def handle_call_tool(name: str, arguments: dict):
     if name == "run_static_quality_audit":
         path = arguments.get("project_path")
-        result_text = await sentinel.perform_static_audit(path)
+        baseline = arguments.get("baseline_code")
+        proposed = arguments.get("proposed_code")
+        result_text = await sentinel.perform_static_audit(path, baseline, proposed)
         return [TextContent(type="text", text=result_text)]
     
     if name == "run_tribunal_audit":
