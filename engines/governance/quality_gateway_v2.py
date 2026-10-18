@@ -11,6 +11,7 @@ Implements the complete specification from docs/poziom-bezpieczeństwa-kodu.md:
 
 from typing import Any, Dict, List, Optional
 from engines.architecture.architecture_engine import ArchitectureEngine
+from engines.governance.ai_review_engine import AIReviewEngine
 from engines.governance.auto_repair import (
     AgentScorecardTracker,
     AuditTrailRecorder,
@@ -43,6 +44,7 @@ class RAEQualityGatewayV2:
         code_quality_engine: Optional[CodeQualityEngine] = None,
         architecture_engine: Optional[ArchitectureEngine] = None,
         infrastructure_engine: Optional[InfrastructureEngine] = None,
+        ai_review_engine: Optional[AIReviewEngine] = None,
         auto_repair: Optional[AutoRepairOrchestrator] = None,
         scorecard_tracker: Optional[AgentScorecardTracker] = None,
         audit_recorder: Optional[AuditTrailRecorder] = None,
@@ -54,6 +56,7 @@ class RAEQualityGatewayV2:
         self.code_quality_engine = code_quality_engine or CodeQualityEngine(self.security_gateway)
         self.architecture_engine = architecture_engine or ArchitectureEngine()
         self.infrastructure_engine = infrastructure_engine or InfrastructureEngine()
+        self.ai_review_engine = ai_review_engine or AIReviewEngine()
         self.auto_repair = auto_repair or AutoRepairOrchestrator()
         self.scorecard_tracker = scorecard_tracker or AgentScorecardTracker()
         self.audit_recorder = audit_recorder or AuditTrailRecorder()
@@ -67,12 +70,17 @@ class RAEQualityGatewayV2:
             modified_files=payload.get("modified_files", []),
             technologies=payload.get("technologies"),
             stage=payload.get("stage"),
+            rollout_phase=payload.get("rollout_phase"),
         )
         self.audit_recorder.append_decision(
             operation="quality.get_policy",
             verdict="PASS",
             actor=payload.get("agent_id", "ai-agent"),
-            evidence_summary={"selected_rules": res["selected_rules_count"], "risk_level": res["risk_level"]},
+            evidence_summary={
+                "selected_rules": res["selected_rules_count"],
+                "risk_level": res["risk_level"],
+                "rollout_phase": res["rollout_phase"],
+            },
         )
         return res
 
@@ -83,6 +91,8 @@ class RAEQualityGatewayV2:
         agent_id = payload.get("agent_id", "ai-agent")
         change_id = payload.get("change_id", "CHG-DEFAULT")
         technologies = payload.get("technologies", ["postgresql", "redis"])
+        baseline_fingerprints = payload.get("baseline_fingerprints")
+        target_file = modified_files[0] if modified_files else "diff.py"
 
         # Check agent self-modification protection first
         tamper = self.policy_engine.check_agent_tampering(
@@ -94,16 +104,27 @@ class RAEQualityGatewayV2:
 
         sec_scan = self.security_gateway.scan_code(
             code=diff_code,
-            file_path=modified_files[0] if modified_files else "diff.py",
+            file_path=target_file,
             languages=payload.get("languages"),
+            baseline_fingerprints=baseline_fingerprints,
         )
         arch_scan = self.architecture_engine.check_architecture(
             code=diff_code,
-            file_path=modified_files[0] if modified_files else "diff.py",
+            file_path=target_file,
             technologies=technologies,
         )
+        ai_review = self.ai_review_engine.review_change_semantics(
+            code=diff_code,
+            requirement_description=payload.get("task_description", ""),
+            file_path=target_file,
+        )
 
-        all_findings = sec_scan["findings"] + arch_scan["findings"]
+        existing_rule_ids = {f["rule_id"] for f in (sec_scan["findings"] + arch_scan["findings"])}
+        semantic_findings = [
+            f for f in ai_review["findings"] if f["rule_id"] not in existing_rule_ids
+        ]
+        all_findings = sec_scan["findings"] + arch_scan["findings"] + semantic_findings
+
         if tamper["tamper_detected"]:
             all_findings.append({
                 "rule_id": "RAE-SEC-208",
@@ -137,7 +158,12 @@ class RAEQualityGatewayV2:
             operation="quality.analyze_diff",
             verdict=verdict,
             actor=agent_id,
-            evidence_summary={"findings_count": len(all_findings), "change_id": change_id},
+            evidence_summary={
+                "findings_count": len(all_findings),
+                "baseline_debt_count": sec_scan.get("baseline_debt_count", 0),
+                "approved_review_id": ai_review["approved_review_id"],
+                "change_id": change_id,
+            },
         )
 
         return {
@@ -146,7 +172,9 @@ class RAEQualityGatewayV2:
             "agent_id": agent_id,
             "tamper_check": tamper,
             "findings_count": len(all_findings),
+            "baseline_debt_count": sec_scan.get("baseline_debt_count", 0),
             "findings": all_findings,
+            "ai_review": ai_review,
             "auto_repair_task": repair_task.model_dump(),
             "sarif": sec_scan["sarif"],
             "audit_sha256": audit_entry["entry_sha256"],
@@ -157,7 +185,13 @@ class RAEQualityGatewayV2:
         code = payload.get("code", "")
         file_path = payload.get("file_path", "inline_snippet.py")
         languages = payload.get("languages", ["python", "php", "typescript"])
-        res = self.security_gateway.scan_code(code=code, file_path=file_path, languages=languages)
+        baseline_fingerprints = payload.get("baseline_fingerprints")
+        res = self.security_gateway.scan_code(
+            code=code,
+            file_path=file_path,
+            languages=languages,
+            baseline_fingerprints=baseline_fingerprints,
+        )
         if payload.get("dockerfile_content"):
             df_findings = self.infrastructure_engine.audit_dockerfile(payload["dockerfile_content"])
             res["dockerfile_findings"] = [f.model_dump() for f in df_findings]
