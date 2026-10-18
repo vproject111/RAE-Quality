@@ -35,6 +35,14 @@ class PolicyEngine:
         "AGENT_CORE_PROTOCOL.md",
     )
 
+    # Section 10: 4-Stage Rollout Plan (Plan wdrożenia etapami)
+    ROLLOUT_PHASES: Dict[str, List[str]] = {
+        "etap_1_p0": ["P0"],
+        "etap_2_p1": ["P0", "P1"],
+        "etap_3_p2": ["P0", "P1", "P2"],
+        "etap_4_prod": ["P0", "P1", "P2", "P3"],
+    }
+
     def __init__(self):
         self._catalog: Dict[str, QualityRule] = build_full_rule_catalog()
 
@@ -51,16 +59,19 @@ class PolicyEngine:
         modified_files: Optional[List[str]] = None,
         technologies: Optional[List[str]] = None,
         stage: Optional[str] = None,
+        rollout_phase: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Implements `quality.get_policy` (Stage 1: Before Coding & Risk Profiling).
-        Selects only the relevant rules based on modified components, languages, and technology stack.
+        Selects only the relevant rules based on modified components, languages, technology stack,
+        and optional Section 10 rollout phase (`etap_1_p0` .. `etap_4_prod`).
         """
         files = modified_files or []
         active_techs = {t.lower() for t in (technologies or ["postgresql", "redis", "docker", "kubernetes"])}
         lower_desc = task_description.lower()
         lower_files = " ".join(f.lower() for f in files)
         combined_context = f"{lower_desc} {lower_files}"
+        allowed_priorities = set(self.ROLLOUT_PHASES.get(rollout_phase or "etap_4_prod", ["P0", "P1", "P2", "P3"]))
 
         # Detect if change is purely cosmetic UI (e.g. button color change)
         is_cosmetic_ui_only = (
@@ -153,13 +164,15 @@ class PolicyEngine:
                 ])
                 mandatory_check_domains.append("infrastructure_containers")
 
-            # Filter out rules requiring a technology that is NOT in active_techs
+            # Filter out rules requiring a technology that is NOT in active_techs or outside rollout phase
             for rid in sorted(selected_ids):
                 rule = self._catalog.get(rid)
                 if not rule:
                     continue
                 req_techs = set(rule.applies_to.technologies)
                 if req_techs and not req_techs.intersection(active_techs):
+                    continue
+                if rule.priority.value not in allowed_priorities:
                     continue
                 if stage and rule.stage.value != stage and rule.priority != ModulePriority.P0:
                     continue
@@ -171,6 +184,9 @@ class PolicyEngine:
             "task_description": task_description,
             "modified_files": files,
             "active_technologies": sorted(list(active_techs)),
+            "rollout_phase": rollout_phase or "etap_4_prod",
+            "allowed_priorities": sorted(list(allowed_priorities)),
+            "baseline_policy": "zero_tolerance_for_new_code_baseline_debt_tracked_separately",
             "is_cosmetic_ui_only": is_cosmetic_ui_only,
             "risk_level": risk_level,
             "mandatory_domains": sorted(list(set(mandatory_check_domains))),
