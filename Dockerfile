@@ -22,7 +22,7 @@ ENV PATH="/opt/venv/bin:$PATH"
 
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt \
-    && pip install --no-cache-dir fastapi uvicorn httpx structlog
+    && pip install --no-cache-dir fastapi uvicorn httpx structlog aiosqlite numpy pydantic-settings pytest-asyncio "mcp<2"
 
 # STAGE 2: Final Runtime
 FROM ubuntu:22.04
@@ -34,11 +34,15 @@ RUN apt-get update && apt-get install -y \
     software-properties-common curl \
     && add-apt-repository ppa:deadsnakes/ppa \
     && apt-get update && apt-get install -y python3.14 \
-    && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/* \
+    && useradd -m -u 10001 raequality || true
 
 WORKDIR /app
 COPY --from=builder /opt/venv /opt/venv
 COPY . .
+
+HEALTHCHECK --interval=30s --timeout=10s --retries=3 \
+  CMD curl -f http://localhost:8000/health || exit 1
 
 EXPOSE 8000
 CMD ["python", "main.py"]
