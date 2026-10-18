@@ -11,6 +11,7 @@ from typing import Any, Dict, List, Optional
 from engines.security.security_gateway import SecurityGateway
 from engines.testing.ast_inspector import ASTInspector
 from models.security_v2 import GatewayVerdict
+from src.test_integrity_guard import TestIntegrityGuard
 
 
 class CodeQualityEngine:
@@ -115,6 +116,7 @@ class CodeQualityEngine:
 
     def __init__(self, security_gateway: Optional[SecurityGateway] = None):
         self.security_gateway = security_gateway or SecurityGateway()
+        self.test_integrity_guard = TestIntegrityGuard()
 
     def generate_tests(
         self,
@@ -168,12 +170,27 @@ class CodeQualityEngine:
     ) -> Dict[str, Any]:
         """
         Implements `quality.verify_fix` (Section 6 & 9).
-        1. Blocks if the agent modified/weakened the canonical security test (`RAE-SEC-208`).
+        1. Blocks if the agent modified/weakened the canonical security test (`RAE-SEC-208`) via both
+           AST TestIntegrityGuard (detects assertion deletion & `assert True` softening) and SHA-256 immutability.
         2. Independently scans `fixed_code` to verify the vulnerability (`rule_id`) was eliminated.
         3. Runs AST inspection (if Python) to ensure no syntax errors or swallowed exceptions were added.
         """
-        # 1. Verify test immutability (Agent cannot alter canonical security tests to force PASS)
+        # 1a. AST-based TestIntegrityGuard check for assertion deletion or `assert True` softening
         if canonical_test_code and agent_submitted_test_code:
+            ast_passed, ast_violation = self.test_integrity_guard.validate_test_integrity(
+                canonical_test_code, agent_submitted_test_code
+            )
+            if not ast_passed:
+                return {
+                    "verdict": GatewayVerdict.BLOCK.value,
+                    "fix_verified": False,
+                    "rule_id": rule_id,
+                    "tamper_detected": True,
+                    "ast_integrity_violation": ast_violation,
+                    "reason": f"BLOCK (RAE-SEC-208 / TestIntegrityGuard): {ast_violation}",
+                }
+
+            # 1b. Verify exact SHA-256 test immutability for canonical security tests
             orig_hash = hashlib.sha256(canonical_test_code.strip().encode("utf-8")).hexdigest()
             sub_hash = hashlib.sha256(agent_submitted_test_code.strip().encode("utf-8")).hexdigest()
             if orig_hash != sub_hash:
@@ -188,7 +205,7 @@ class CodeQualityEngine:
                     ),
                 }
 
-        #Also check if agent_submitted_test_code contains pytest.mark.skip / xfail weakening
+        # Also check if agent_submitted_test_code contains pytest.mark.skip / xfail / assert True weakening
         lower_test = agent_submitted_test_code.lower()
         if any(marker in lower_test for marker in ("pytest.mark.skip", "pytest.skip(", "pytest.mark.xfail", "@unittest.skip")):
             return {
@@ -198,6 +215,20 @@ class CodeQualityEngine:
                 "tamper_detected": True,
                 "reason": "BLOCK (Zero Test Weakening): Agent attempted to skip or xfail security test.",
             }
+        if agent_submitted_test_code and not canonical_test_code:
+            # Even without canonical_test_code, check if agent submitted trivial `assert True`
+            try:
+                import ast as _ast
+                if self.test_integrity_guard._count_soft_assertions(_ast.parse(agent_submitted_test_code)) > 0:
+                    return {
+                        "verdict": GatewayVerdict.BLOCK.value,
+                        "fix_verified": False,
+                        "rule_id": rule_id,
+                        "tamper_detected": True,
+                        "reason": "BLOCK (Zero Test Weakening): Trivial soft assertion (`assert True` / `1 == 1`) detected.",
+                    }
+            except SyntaxError:
+                pass
 
         # 2. Scan original vs fixed code with SecurityGateway
         before_scan = self.security_gateway.scan_code(original_code)
