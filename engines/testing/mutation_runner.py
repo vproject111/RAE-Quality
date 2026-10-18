@@ -23,8 +23,6 @@ class MutationCoverageEngine:
                 candidate = os.path.abspath(os.path.join(current_dir, "..", "..", "..", ".."))
                 if os.path.isdir(os.path.join(candidate, "RAE-Suite")):
                     cloud_root = candidate
-                elif os.path.isdir("/home/grzegorz/cloud"):
-                    cloud_root = "/home/grzegorz/cloud"
                 else:
                     cloud_root = "/app"
 
