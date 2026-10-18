@@ -18,6 +18,8 @@ class QualityTribunal:
         self.timeout = httpx.Timeout(120.0, connect=10.0)
         self.tier2_agent = os.getenv("TRIBUNAL_TIER2_AGENT", "rae-local-reasoner")
         self.tier3_agent = os.getenv("TRIBUNAL_TIER3_AGENT", "rae-oracle-gemini")
+        self.tier2_triad_layer = "tier2_review_repair"
+        self.tier3_triad_layer = "tier3_judge"
 
     async def run_audit(self, code: str, project: str, importance: str = "medium") -> AuditResult:
         """Executes the full 3-tier audit pipeline."""
@@ -51,14 +53,14 @@ class QualityTribunal:
         return AuditResult(verdict=Verdict.PASSED, confidence=1.0, score=1.0, reasoning="Passed Tier 1 static guards.", tier_reached=1)
 
     async def _run_tier2_consensus(self, code: str, project: str) -> AuditResult:
-        """Semantic review using Local LLM with Memory Context."""
+        """Semantic review using Local LLM or LayerTriadRunner (tier2_review_repair) with Memory Context."""
         try:
             # 1. Fetch guidelines from RAE Memory (Semantic Layer)
             guidelines = await self._fetch_project_guidelines(project)
             
             # 2. Construct Prompt for Local LLM (Ollama via Bridge or Direct)
             prompt = f"""
-            SYSTEM: You are the RAE Tier 2 Quality Auditor.
+            SYSTEM: You are the RAE Tier 2 Quality Auditor ({self.tier2_triad_layer}).
             PROJECT CONTEXT: {guidelines}
             CODE TO AUDIT:
             ```
@@ -82,18 +84,19 @@ class QualityTribunal:
                 confidence=0.85,
                 score=data.get("score", 0.5),
                 reasoning=data.get("reasoning", "Semantic consensus reached."),
-                tier_reached=2
+                tier_reached=2,
+                metadata={"triad_layer": self.tier2_triad_layer, "agent": self.tier2_agent},
             )
         except Exception as e:
             logger.error(f"tier2_failed: {e}")
             return AuditResult(verdict=Verdict.ERROR, confidence=0.0, score=0.0, reasoning=f"Tier 2 Exception: {str(e)}", tier_reached=2)
 
     async def _run_tier3_escalation(self, code: str, project: str, t2_result: AuditResult) -> AuditResult:
-        """High-level reasoning using SaaS Models (Gemini/GPT-4) via Bridge."""
+        """High-level reasoning using SaaS Models (tier3_judge) via Bridge."""
         logger.warning(f"tier3_escalation_initiated: project={project}")
         try:
             prompt = f"""
-            SYSTEM: You are the Supreme Court Auditor.
+            SYSTEM: You are the Supreme Court Auditor ({self.tier3_triad_layer}).
             PROJECT: {project}
             PREVIOUS REASONING: {t2_result.reasoning}
             CODE:
@@ -116,7 +119,7 @@ class QualityTribunal:
                 score=data.get("score", 1.0),
                 reasoning=f"Supreme Court Verdict: {data.get('reasoning')}",
                 tier_reached=3,
-                metadata={"consensus_log": data.get("reasoning")}
+                metadata={"consensus_log": data.get("reasoning"), "triad_layer": self.tier3_triad_layer, "agent": self.tier3_agent}
             )
         except Exception as e:
             return AuditResult(verdict=Verdict.ERROR, confidence=0.0, score=0.0, reasoning=f"Tier 3 Exception: {str(e)}", tier_reached=3)
